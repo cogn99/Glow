@@ -1,0 +1,125 @@
+name: Create SCInsta Sideload IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      ipa_url:
+        description: "Direct URL to decrypted Instagram IPA"
+        default: ""
+        required: true
+        type: string
+
+      display_name:
+        description: "Display Name (Optional)"
+        default: "Instagram"
+        required: true
+        type: string
+
+      bundle_id:
+        description: "Bundle ID (Optional)"
+        default: "com.burbn.instagram"
+        required: true
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build SCInsta
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          path: main
+          submodules: recursive
+
+      - name: Hide sensitive inputs
+        uses: levibostian/action-hide-sensitive-inputs@v1
+        with:
+          exclude_inputs: display_name,bundle_id
+
+      - name: Download Instagram IPA (decrypted)
+        working-directory: main
+        run: |
+          mkdir -p packages
+          echo "Downloading IPA from: ${{ inputs.ipa_url }}"
+          wget "${{ inputs.ipa_url }}" --no-verbose -O packages/com.burbn.instagram.ipa
+          
+          type=$(file --mime-type -b packages/com.burbn.instagram.ipa)
+          if [[ "$type" != "application/zip" && "$type" != "application/x-ios-app" ]]; then
+            echo "::error::Invalid IPA file. Detected: $type"
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: |
+          brew update
+          brew install make cmake ldid wget pipx
+
+      - name: Add GNU make to PATH
+        run: echo "$(brew --prefix make)/libexec/gnubin" >> $GITHUB_PATH
+
+      - name: Configure pipx PATH
+        run: |
+          pipx ensurepath
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Install cyan
+        run: pipx install --force https://github.com/asdfzxcvbn/pyzule-rw/archive/main.zip
+
+      - name: Install Theos
+        run: |
+          git clone --recursive https://github.com/theos/theos "$HOME/theos"
+          mkdir -p "$HOME/theos/sdks"
+
+      - name: Install iOS 14.5 SDK
+        run: |
+          curl -L https://github.com/xybp888/iOS-SDKs/archive/refs/heads/master.zip -o /tmp/iOS-SDKs.zip
+          unzip -q /tmp/iOS-SDKs.zip -d /tmp
+          mv /tmp/iOS-SDKs-master/iPhoneOS14.5.sdk "$HOME/theos/sdks/"
+          ls "$HOME/theos/sdks"
+
+      - name: Set THEOS env
+        run: echo "THEOS=$HOME/theos" >> $GITHUB_ENV
+
+      # Build tweak (deb file)
+      - name: Build SCInsta Deb
+        working-directory: main
+        env:
+          THEOS: ${{ env.THEOS }}
+        run: |
+          make clean
+          make package
+          DEB_FILE=$(find packages -name "*.deb" | head -n 1)
+          if [[ -z "$DEB_FILE" ]]; then
+            echo "::error::Deb file not generated!"
+            exit 1
+          fi
+          echo "DEB_FILE=$DEB_FILE" >> $GITHUB_ENV
+
+      # Use cyan to inject tweak and rename + re-bundle IPA
+      - name: Create SCInsta Sideload IPA
+        working-directory: main
+        run: |
+          cyan -i packages/com.burbn.instagram.ipa \
+               -o SCInsta_sideload_${{ github.run_number }}.ipa \
+               -uwef "${{ env.DEB_FILE }}" \
+               -n "${{ inputs.display_name }}" \
+               -b "${{ inputs.bundle_id }}" \
+               -s
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: scinsta-${{ github.run_number }}
+          name: "SCInsta Build #${{ github.run_number }}"
+          files: main/SCInsta_sideload_${{ github.run_number }}.ipa
+          draft: true
+
+      - name: Release link
+        run: echo "::notice::Download at https://github.com/${{ github.repository }}/releases"
