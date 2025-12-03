@@ -1,4 +1,4 @@
-name: Create SCInsta sideload IPA
+name: Create SCInsta sideload IPA V1
 
 on:
   workflow_dispatch:
