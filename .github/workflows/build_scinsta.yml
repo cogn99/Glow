@@ -1,22 +1,22 @@
-name: Create SCInsta Sideload IPA V2
+name: Create SCInsta sideload IPA
 
 on:
   workflow_dispatch:
     inputs:
       ipa_url:
-        description: "Direct URL to decrypted Instagram IPA"
+        description: "Direct URL to decrypted Instagram IPA (com.burbn.instagram)"
         default: ""
         required: true
         type: string
 
       display_name:
-        description: "Display Name (Optional)"
+        description: "Display Name (tên app hiển thị)"
         default: "Instagram"
         required: true
         type: string
 
       bundle_id:
-        description: "Bundle ID (Optional)"
+        description: "Bundle ID (vd: com.yourname.scinsta)"
         default: "com.burbn.instagram"
         required: true
         type: string
@@ -27,13 +27,13 @@ concurrency:
 
 jobs:
   build:
-    name: Build SCInsta
+    name: Build SCInsta sideload IPA
     runs-on: macos-latest
     permissions:
       contents: write
 
     steps:
-      - name: Checkout repo
+      - name: Checkout SCInsta repo
         uses: actions/checkout@v4
         with:
           path: main
@@ -44,20 +44,22 @@ jobs:
         with:
           exclude_inputs: display_name,bundle_id
 
-      - name: Download Instagram IPA (decrypted)
+      # TẢI IPA INSTAGRAM ĐÃ DECRYPT
+      - name: Download decrypted Instagram IPA
         working-directory: main
         run: |
           mkdir -p packages
           echo "Downloading IPA from: ${{ inputs.ipa_url }}"
           wget "${{ inputs.ipa_url }}" --no-verbose -O packages/com.burbn.instagram.ipa
-          
-          type=$(file --mime-type -b packages/com.burbn.instagram.ipa)
-          if [[ "$type" != "application/zip" && "$type" != "application/x-ios-app" ]]; then
-            echo "::error::Invalid IPA file. Detected: $type"
+
+          file_type=$(file --mime-type -b packages/com.burbn.instagram.ipa)
+          if [[ "$file_type" != "application/x-ios-app" && "$file_type" != "application/zip" ]]; then
+            echo "::error::Validation failed: The downloaded file is not a valid IPA. Detected type: $file_type."
             exit 1
           fi
 
-      - name: Install dependencies
+      # CÀI DEPENDENCIES NHƯ README
+      - name: Install Homebrew dependencies
         run: |
           brew update
           brew install make cmake ldid wget pipx
@@ -65,7 +67,7 @@ jobs:
       - name: Add GNU make to PATH
         run: echo "$(brew --prefix make)/libexec/gnubin" >> $GITHUB_PATH
 
-      - name: Configure pipx PATH
+      - name: Ensure pipx PATH
         run: |
           pipx ensurepath
           echo "$HOME/.local/bin" >> $GITHUB_PATH
@@ -73,53 +75,55 @@ jobs:
       - name: Install cyan
         run: pipx install --force https://github.com/asdfzxcvbn/pyzule-rw/archive/main.zip
 
+      # CÀI THEOS + iOS 14.5 SDK (đúng README)
       - name: Install Theos
         run: |
-          git clone --recursive https://github.com/theos/theos "$HOME/theos"
+          git clone --recursive https://github.com/theos/theos.git "$HOME/theos"
           mkdir -p "$HOME/theos/sdks"
 
-      - name: Install iOS 14.5 SDK
+      - name: Install iOS 14.5 SDK for Theos
         run: |
           curl -L https://github.com/xybp888/iOS-SDKs/archive/refs/heads/master.zip -o /tmp/iOS-SDKs.zip
           unzip -q /tmp/iOS-SDKs.zip -d /tmp
-          mv /tmp/iOS-SDKs-master/iPhoneOS14.5.sdk "$HOME/theos/sdks/"
+          mv /tmp/iOS-SDKs-master/iPhoneOS14.5.sdk "$HOME/theos/sdks/iPhoneOS14.5.sdk"
           ls "$HOME/theos/sdks"
 
       - name: Set THEOS env
         run: echo "THEOS=$HOME/theos" >> $GITHUB_ENV
 
-      # Build tweak (deb file)
-      - name: Build SCInsta Deb
+      # CHẠY ĐÚNG BUILD.SH CỦA PROJECT: ./build.sh sideload
+      - name: Build SCInsta with build.sh (sideload)
         working-directory: main
         env:
           THEOS: ${{ env.THEOS }}
         run: |
-          make clean
-          make package
-          DEB_FILE=$(find packages -name "*.deb" | head -n 1)
-          if [[ -z "$DEB_FILE" ]]; then
-            echo "::error::Deb file not generated!"
+          chmod +x build.sh
+          ./build.sh sideload
+
+          if [ ! -f "packages/SCInsta-sideloaded.ipa" ]; then
+            echo "::error::SCInsta-sideloaded.ipa not found in packages/"
+            ls -R
             exit 1
           fi
-          echo "DEB_FILE=$DEB_FILE" >> $GITHUB_ENV
 
-      # Use cyan to inject tweak and rename + re-bundle IPA
-      - name: Create SCInsta Sideload IPA
+      # DÙNG CYAN LẦN 2 ĐỂ ĐỔI TÊN APP + BUNDLE ID
+      - name: Repack IPA with new name & bundle id
         working-directory: main
         run: |
-          cyan -i packages/com.burbn.instagram.ipa \
+          cyan -i packages/SCInsta-sideloaded.ipa \
                -o SCInsta_sideload_${{ github.run_number }}.ipa \
-               -uwef "${{ env.DEB_FILE }}" \
                -n "${{ inputs.display_name }}" \
                -b "${{ inputs.bundle_id }}" \
                -s
 
+      # UPLOAD LÊN RELEASES
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: scinsta-${{ github.run_number }}
-          name: "SCInsta Build #${{ github.run_number }}"
+          tag_name: scinsta-sideload-${{ github.run_number }}
+          name: "SCInsta Sideload #${{ github.run_number }}"
           files: main/SCInsta_sideload_${{ github.run_number }}.ipa
           draft: true
 
-      - name: Release link
-        run: echo "::notice::Download at https://github.com/${{ github.repository }}/releases"
+      - name: Output Release URL
+        run: |
+          echo "::notice::Release available at: https://github.com/${{ github.repository }}/releases"
